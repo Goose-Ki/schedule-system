@@ -13,5 +13,5 @@
 │ Telegram Protocol │ Database
 ▼ ▼
 ┌─────────┐ ┌─────────┐
-│ Users │ │ SQLite │
+│ Users │ │   SQLite │
 └─────────┘ └─────────┘
