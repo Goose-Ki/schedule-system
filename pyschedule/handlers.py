@@ -58,6 +58,8 @@ async def cmd_help(message: Message):
         '📋 **Команды бота:**\n\n'
         '/start - Запуск бота\n'
         '/create - Добавить занятие\n' 
+        '/update - Редактировать занятие\n' 
+        '/delete - Удалить занятие\n' 
         '/schedule - Показать расписание\n'
         '/help - Помощь\n\n'
         '⏰ **Формат времени:** HH:MM (например, 14:30)'
@@ -69,6 +71,14 @@ async def help_button(message: Message):
 
 # создание расписания
 @router.message(Command('create'))
+async def start_create_schedule(message: Message, state: FSMContext):
+    await message.answer(
+        "📅 Выберите день недели:",
+        reply_markup=kb.dn
+    )
+    await state.set_state(ScheduleForm.day)
+
+@router.message(F.text == 'Добавить занятие')
 async def start_create_schedule(message: Message, state: FSMContext):
     await message.answer(
         "📅 Выберите день недели:",
@@ -320,6 +330,11 @@ async def process_time_invalid(message: Message):
 @router.message(ScheduleForm.day)
 async def process_day_invalid(message: Message):
     await message.answer("❌ Пожалуйста, выберите день недели из клавиатуры")
+
+# Главное меню
+@router.message(F.text == "Главное меню")
+async def back_to_main_menu(message: Message):
+    await message.answer("Вы в главном меню", reply_markup=kb.main)
 
 # Обработка любых других сообщений
 @router.message()

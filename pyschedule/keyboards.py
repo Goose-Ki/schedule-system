@@ -3,6 +3,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 # старт
 main = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text='Показать расписание'), KeyboardButton(text='Экспорт расписания')],
+    [KeyboardButton(text='Добавить занятие'), KeyboardButton(text='Удалить занятие')],
+    [KeyboardButton(text='Редактировать занятие')],
     [KeyboardButton(text='Помощь и список команд')],
     [KeyboardButton(text='Статистика')]
 ],
@@ -17,7 +19,8 @@ dn = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text='Четверг')],
     [KeyboardButton(text='Пятница')],
     [KeyboardButton(text='Суббота')],
-    [KeyboardButton(text='Воскресенье')]
+    [KeyboardButton(text='Воскресенье')],
+    [KeyboardButton(text='Главное меню')]
 ],
                             resize_keyboard=True,
                             input_field_placeholder='Выберите день недели.')
