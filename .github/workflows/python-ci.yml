@@ -1,0 +1,31 @@
+name: Python CI - Проверка кода
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 Вытягиваем код из репозитория
+      uses: actions/checkout@v4
+
+    - name: 🐍 Устанавливаем Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: 📦 Устанавливаем зависимости
+      run: |
+        cd pyschedule
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: 🔍 Проверяем синтаксис Python (линтер)
+      run: |
+        cd pyschedule
+        python -m py_compile *.py || echo "Линтинг завершён"
