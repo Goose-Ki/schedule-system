@@ -3,6 +3,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 import logging
 
 from api_client import ScheduleAPIClient
@@ -15,6 +16,14 @@ api_client = ScheduleAPIClient()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_schedule_actions_keyboard(schedule_id: int):
+    """Создает inline-кнопки для одной записи расписания"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Редактировать", callback_data=f"edit_{schedule_id}")
+    builder.button(text="🗑️ Удалить", callback_data=f"delete_{schedule_id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
 # Состояния для создания расписания
 class ScheduleForm(StatesGroup):
     day = State()
@@ -22,6 +31,18 @@ class ScheduleForm(StatesGroup):
     time_end = State()
     subject = State()
     description = State()
+
+# Состояния для редактирования (без дня недели)
+class EditScheduleForm(StatesGroup):
+    choosing_schedule = State()
+    choosing_field = State()
+    entering_value = State()
+    confirm_edit = State()
+
+# Состояния для удаления
+class DeleteScheduleForm(StatesGroup):
+    choosing_schedule = State()
+    confirmation = State()
 
 # старт
 @router.message(CommandStart())
@@ -138,7 +159,7 @@ async def process_description(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    # Безопасный доступ к данным пользователя
+    # Безопасный доступ к данных пользователя
     user_data_response = user_info.get("data", {})
     user_id = user_data_response.get("id")
     
@@ -249,17 +270,22 @@ async def show_day_schedule(message: Message):
         await message.answer(f"📭 На {message.text} занятий нет")
         return
     
-    # Форматируем ответ
-    schedule_text = f"📅 **{message.text}**:\n\n"
+    # Отправляем заголовок дня
+    await message.answer(f"📅 **{message.text}:**")
     
+    # Отправляем каждое занятие отдельным сообщением с кнопками
     for i, item in enumerate(items, 1):
-        schedule_text += f"{i}. 🕒 {item['time_start']}-{item['time_end']}\n"
-        schedule_text += f"   📚 {item['subject']}\n"
+        # Форматируем одну запись
+        item_text = f"{i}. 🕒 {item['time_start']}-{item['time_end']}\n"
+        item_text += f"   📚 {item['subject']}\n"
         if item.get('description'):
-            schedule_text += f"   📝 {item['description']}\n"
-        schedule_text += "\n"
-    
-    await message.answer(schedule_text)
+            item_text += f"   📝 {item['description']}\n"
+        
+        # Отправляем запись с кнопками действий
+        await message.answer(
+            item_text,
+            reply_markup=get_schedule_actions_keyboard(item['id'])
+        )
 
 # статистика
 @router.message(Command('statistics'))
@@ -335,6 +361,346 @@ async def process_day_invalid(message: Message):
 @router.message(F.text == "Главное меню")
 async def back_to_main_menu(message: Message):
     await message.answer("Вы в главном меню", reply_markup=kb.main)
+
+# ==================== УДАЛЕНИЕ ====================
+
+# Обработчик кнопки "Удалить занятие"
+@router.message(F.text == "Удалить занятие")
+async def start_delete_schedule(message: Message, state: FSMContext):
+    """Начинаем процесс удаления - показываем список занятий"""
+    # Получаем пользователя
+    user_data = api_client.get_user_by_telegram_id(message.from_user.id)
+    
+    if not user_data.get("success"):
+        await message.answer("❌ Сначала зарегистрируйтесь через /start", reply_markup=kb.main)
+        return
+    
+    user_id = user_data["data"]["id"]
+    
+    # Получаем ВСЕ занятия пользователя (без фильтра по дню)
+    schedule_data = api_client.get_user_schedule(user_id)
+    
+    if not schedule_data.get("success") or not schedule_data.get("data", {}).get("items"):
+        await message.answer("📭 У вас нет занятий для удаления", reply_markup=kb.main)
+        return
+    
+    items = schedule_data["data"]["items"]
+    
+    # Формируем клавиатуру с занятиями
+    builder = InlineKeyboardBuilder()
+    
+    day_names = {
+        'monday': 'Пн', 'tuesday': 'Вт', 'wednesday': 'Ср',
+        'thursday': 'Чт', 'friday': 'Пт', 'saturday': 'Сб', 
+        'sunday': 'Вс'
+    }
+    
+    for item in items:
+        day_ru = day_names.get(item['day_of_week'], item['day_of_week'])
+        button_text = f"{item['subject']} ({day_ru} {item['time_start']})"
+        builder.button(text=button_text, callback_data=f"select_delete_{item['id']}")
+    
+    builder.button(text="❌ Отмена", callback_data="cancel_delete")
+    builder.adjust(1)
+    
+    await message.answer(
+        "🗑️ **Выберите занятие для удаления:**",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(DeleteScheduleForm.choosing_schedule)
+
+# Обработчик выбора занятия для удаления
+@router.callback_query(F.data.startswith("select_delete_"))
+async def select_schedule_for_delete(callback: CallbackQuery, state: FSMContext):
+    """Пользователь выбрал занятие - запрашиваем подтверждение"""
+    schedule_id = int(callback.data.split("_")[2])
+    
+    # Сохраняем ID в состоянии
+    await state.update_data(schedule_id=schedule_id)
+    
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data=f"confirm_delete_{schedule_id}")
+    builder.button(text="❌ Нет, отменить", callback_data="cancel_delete")
+    builder.adjust(2)
+    
+    await callback.message.answer(
+        "❓ **Вы уверены, что хотите удалить это занятие?**",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(DeleteScheduleForm.confirmation)
+    await callback.answer()
+
+# Обработчик подтверждения удаления
+@router.callback_query(F.data.startswith("confirm_delete_"))
+async def confirm_delete_schedule(callback: CallbackQuery, state: FSMContext):
+    """Финальное удаление занятия"""
+    schedule_id = int(callback.data.split("_")[2])
+    
+    # Вызываем API для удаления
+    result = api_client.delete_schedule_item(schedule_id)
+    
+    if result.get("success"):
+        # Удаляем сообщение с кнопками
+        await callback.message.delete()
+        await callback.message.answer("✅ Занятие успешно удалено!", reply_markup=kb.main)
+    else:
+        error_msg = result.get('error', 'Неизвестная ошибка')
+        await callback.message.answer(f"❌ Ошибка при удалении: {error_msg}", reply_markup=kb.main)
+    
+    await state.clear()
+    await callback.answer()
+
+# ==================== РЕДАКТИРОВАНИЕ (БЕЗ ДНЯ НЕДЕЛИ) ====================
+
+# Обработчик кнопки "Редактировать занятие"
+@router.message(F.text == "Редактировать занятие")
+async def start_edit_schedule(message: Message, state: FSMContext):
+    """Начинаем процесс редактирования - показываем список занятий"""
+    # Получаем пользователя
+    user_data = api_client.get_user_by_telegram_id(message.from_user.id)
+    
+    if not user_data.get("success"):
+        await message.answer("❌ Сначала зарегистрируйтесь через /start", reply_markup=kb.main)
+        return
+    
+    user_id = user_data["data"]["id"]
+    
+    # Получаем ВСЕ занятия пользователя
+    schedule_data = api_client.get_user_schedule(user_id)
+    
+    if not schedule_data.get("success") or not schedule_data.get("data", {}).get("items"):
+        await message.answer("📭 У вас нет занятий для редактирования", reply_markup=kb.main)
+        return
+    
+    items = schedule_data["data"]["items"]
+    
+    # Формируем клавиатуру с занятиями
+    builder = InlineKeyboardBuilder()
+    
+    day_names = {
+        'monday': 'Пн', 'tuesday': 'Вт', 'wednesday': 'Ср',
+        'thursday': 'Чт', 'friday': 'Пт', 'saturday': 'Сб', 
+        'sunday': 'Вс'
+    }
+    
+    for item in items:
+        day_ru = day_names.get(item['day_of_week'], item['day_of_week'])
+        button_text = f"{item['subject']} ({day_ru} {item['time_start']})"
+        builder.button(text=button_text, callback_data=f"select_edit_{item['id']}")
+    
+    builder.button(text="❌ Отмена", callback_data="cancel_edit")
+    builder.adjust(1)
+    
+    await message.answer(
+        "✏️ **Выберите занятие для редактирования:**",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(EditScheduleForm.choosing_schedule)
+
+# Обработчик выбора занятия для редактирования
+@router.callback_query(F.data.startswith("select_edit_"))
+async def select_schedule_for_edit(callback: CallbackQuery, state: FSMContext):
+    """Пользователь выбрал занятие - спрашиваем что редактировать"""
+    schedule_id = int(callback.data.split("_")[2])
+    
+    # Сохраняем ID в состоянии
+    await state.update_data(schedule_id=schedule_id)
+    
+    # Получаем данные занятия для отображения
+    schedule_data = api_client.get_schedule_by_id(schedule_id)
+    
+    if not schedule_data.get("success"):
+        await callback.message.answer("❌ Не удалось получить данные занятия", reply_markup=kb.main)
+        await state.clear()
+        return
+    
+    # Показываем что редактировать (БЕЗ ДНЯ НЕДЕЛИ)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📚 Предмет", callback_data=f"edit_field_subject")
+    builder.button(text="⏰ Время начала", callback_data=f"edit_field_time_start")
+    builder.button(text="⏰ Время окончания", callback_data=f"edit_field_time_end")
+    builder.button(text="📝 Описание", callback_data=f"edit_field_description")
+    builder.button(text="❌ Отмена", callback_data="cancel_edit")
+    builder.adjust(2, 2)  # Теперь 4 кнопки в 2 строки
+    
+    await callback.message.answer(
+        "✏️ **Что вы хотите изменить?**",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(EditScheduleForm.choosing_field)
+    await callback.answer()
+
+# Обработчик выбора поля для редактирования
+@router.callback_query(F.data.startswith("edit_field_"))
+async def choose_field_to_edit(callback: CallbackQuery, state: FSMContext):
+    """Пользователь выбрал поле - запрашиваем новое значение"""
+    field = callback.data.split("_")[2]
+    
+    # Сохраняем выбранное поле в состоянии
+    await state.update_data(field_to_edit=field)
+    
+    # Показываем подсказку в зависимости от поля (БЕЗ ДНЯ)
+    field_hints = {
+        'subject': '📚 Введите новое название предмета:',
+        'time_start': '⏰ Введите новое время начала (HH:MM):',
+        'time_end': '⏰ Введите новое время окончания (HH:MM):',
+        'description': '📝 Введите новое описание:'
+    }
+    
+    hint = field_hints.get(field, 'Введите новое значение:')
+    
+    await callback.message.answer(hint, reply_markup=kb.cancel_kb)
+    await state.set_state(EditScheduleForm.entering_value)
+    await callback.answer()
+
+# Обработчик ввода нового значения
+@router.message(EditScheduleForm.entering_value)
+async def process_new_value(message: Message, state: FSMContext):
+    """Обработка нового значения для поля"""
+    user_data = await state.get_data()
+    field = user_data.get('field_to_edit')
+    schedule_id = user_data.get('schedule_id')
+    
+    if not field or not schedule_id:
+        await message.answer("❌ Ошибка: данные не найдены", reply_markup=kb.main)
+        await state.clear()
+        return
+    
+    new_value = message.text
+    
+    # Валидация только для времени (дня недели больше нет)
+    if field in ['time_start', 'time_end']:
+        import re
+        if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', new_value):
+            await message.answer("❌ Неверный формат времени. Используйте HH:MM")
+            return
+    
+    # Сохраняем новое значение
+    await state.update_data(new_value=new_value)
+    
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, сохранить", callback_data="confirm_edit")
+    builder.button(text="❌ Отмена", callback_data="cancel_edit")
+    builder.adjust(2)
+    
+    await message.answer(
+        f"📝 **Подтвердите изменение:**\n"
+        f"Поле: {field}\n"
+        f"Новое значение: {new_value}\n\n"
+        f"Сохранить изменения?",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(EditScheduleForm.confirm_edit)
+
+# Обработчик подтверждения редактирования
+@router.callback_query(F.data == "confirm_edit")
+async def confirm_edit_schedule(callback: CallbackQuery, state: FSMContext):
+    """Финальное сохранение изменений"""
+    user_data = await state.get_data()
+    schedule_id = user_data.get('schedule_id')
+    field = user_data.get('field_to_edit')
+    new_value = user_data.get('new_value')
+
+    logger.info(f"CONFIRM EDIT: schedule_id={schedule_id}, field={field}, new_value={new_value}")
+    
+    if not all([schedule_id, field, new_value]):
+        await callback.message.answer("❌ Ошибка: данные не найдены", reply_markup=kb.main)
+        await state.clear()
+        await callback.answer()
+        return
+    
+    # Создаем данные для обновления
+    update_data = {field: new_value}
+    
+    logger.info(f"Sending to API: {update_data}")
+    
+    # Вызываем API для обновления
+    result = api_client.update_schedule_item(schedule_id, update_data)
+    
+    logger.info(f"API response: {result}")
+    
+    if result.get("success"):
+        await callback.message.answer("✅ Изменения успешно сохранены!", reply_markup=kb.main)
+    else:
+        error_msg = result.get('error', 'Неизвестная ошибка')
+        await callback.message.answer(f"❌ Ошибка при сохранении: {error_msg}", reply_markup=kb.main)
+    
+    await state.clear()
+    await callback.answer()
+
+# ==================== ОБЩИЕ ОБРАБОТЧИКИ ====================
+
+# Обработчик inline-кнопки удаления (из расписания)
+@router.callback_query(F.data.startswith("delete_"))
+async def delete_schedule_inline(callback: CallbackQuery):
+    """Удаление через inline-кнопку из расписания"""
+    schedule_id = int(callback.data.split("_")[1])
+    
+    # Запрашиваем подтверждение
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data=f"confirm_inline_delete_{schedule_id}")
+    builder.button(text="❌ Отмена", callback_data="cancel_inline_action")
+    builder.adjust(2)
+    
+    await callback.message.answer(
+        "❓ **Удалить это занятие?**",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+# Обработчик подтверждения удаления из inline
+@router.callback_query(F.data.startswith("confirm_inline_delete_"))
+async def confirm_inline_delete(callback: CallbackQuery):
+    """Подтверждение удаления из inline-кнопки"""
+    schedule_id = int(callback.data.split("_")[3])
+    
+    result = api_client.delete_schedule_item(schedule_id)
+    
+    if result.get("success"):
+        await callback.message.delete()  # Удаляем сообщение с занятием
+        await callback.message.answer("✅ Занятие удалено!", reply_markup=kb.main)
+    else:
+        error_msg = result.get('error', 'Неизвестная ошибка')
+        await callback.message.answer(f"❌ Ошибка: {error_msg}", reply_markup=kb.main)
+    
+    await callback.answer()
+
+# Обработчик inline-кнопки редактирования (из расписания)
+@router.callback_query(F.data.startswith("edit_"))
+async def edit_schedule_inline(callback: CallbackQuery, state: FSMContext):
+    """Редактирование через inline-кнопку из расписания"""
+    schedule_id = int(callback.data.split("_")[1])
+    
+    # Начинаем процесс редактирования
+    await state.update_data(schedule_id=schedule_id)
+    
+    # Показываем выбор поля для редактирования (БЕЗ ДНЯ НЕДЕЛИ)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📚 Предмет", callback_data=f"edit_field_subject")
+    builder.button(text="⏰ Время начала", callback_data=f"edit_field_time_start")
+    builder.button(text="⏰ Время окончания", callback_data=f"edit_field_time_end")
+    builder.button(text="📝 Описание", callback_data=f"edit_field_description")
+    builder.button(text="❌ Отмена", callback_data="cancel_inline_action")
+    builder.adjust(2, 2)  # 4 кнопки в 2 строки
+    
+    await callback.message.answer(
+        "✏️ **Что вы хотите изменить?**",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(EditScheduleForm.choosing_field)
+    await callback.answer()
+
+# Обработчики отмены
+@router.callback_query(F.data == "cancel_delete")
+@router.callback_query(F.data == "cancel_edit")
+@router.callback_query(F.data == "cancel_inline_action")
+async def cancel_action(callback: CallbackQuery, state: FSMContext):
+    """Отмена любого действия"""
+    await callback.message.answer("❌ Действие отменено", reply_markup=kb.main)
+    await state.clear()
+    await callback.answer()
 
 # Обработка любых других сообщений
 @router.message()

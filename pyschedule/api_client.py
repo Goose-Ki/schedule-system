@@ -136,20 +136,59 @@ class ScheduleAPIClient:
             logger.error(f"Error getting schedule: {e}")
             return {"success": False, "error": str(e)}
     
-    def delete_schedule_item(self, item_id: int):
+    def delete_schedule_item(self, schedule_id: int):
         """Удаляет занятие из расписания"""
-        # Если ваш API поддерживает DELETE
         try:
             response = self.session.delete(
-                f"{self.base_url}/api/schedule/{item_id}",
+                f"{self.base_url}/api/schedule/{schedule_id}",
                 timeout=5
             )
             
             if response.status_code in [200, 204]:
                 return {"success": True}
             else:
+                logger.error(f"Failed to delete schedule {schedule_id}: {response.status_code} - {response.text}")
                 return {"success": False, "error": f"Status: {response.status_code}"}
                 
         except Exception as e:
             logger.error(f"Error deleting schedule: {e}")
             return {"success": False, "error": str(e)}
+    
+    def update_schedule_item(self, schedule_id: int, update_data: dict):
+        """Обновляет запись расписания"""
+        try:
+            response = self.session.put(
+                f"{self.base_url}/api/schedule/{schedule_id}",
+                json=update_data,
+                timeout=5
+            )
+            
+            if response.status_code in [200, 204]:
+                return {"success": True}
+            else:
+                logger.error(f"Failed to update schedule {schedule_id}: {response.status_code} - {response.text}")
+                return {"success": False, "error": f"Status: {response.status_code}"}
+                
+        except Exception as e:
+            logger.error(f"Error updating schedule: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_schedule_by_id(self, schedule_id: int):
+        """Получает конкретную запись расписания по ID"""
+        try:
+            response = self.session.get(
+                f"{self.base_url}/api/schedule/{schedule_id}",
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return {"success": True, "data": data.get("item", data)}
+            else:
+                logger.error(f"Failed to get schedule {schedule_id}: {response.status_code} - {response.text}")
+                return {"success": False, "error": f"Status: {response.status_code}"}
+                
+        except Exception as e:
+            logger.error(f"Error getting schedule by ID: {e}")
+            return {"success": False, "error": str(e)}
+    
