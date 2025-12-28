@@ -38,6 +38,7 @@ func main() {
 		// Schedule routes
 		api.POST("/schedule", handlers.CreateScheduleItem(db))
 		api.GET("/schedule", handlers.GetSchedule(db))
+		api.GET("/schedule/:id", handlers.GetScheduleByID(db))
 		api.PUT("/schedule/:id", handlers.UpdateScheduleItem(db))
 		api.DELETE("/schedule/:id", handlers.DeleteScheduleItem(db))
 	}
